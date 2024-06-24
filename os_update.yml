@@ -1,0 +1,134 @@
+---
+- name: Atualização abrangente de sistemas operacionais
+  hosts: all
+  gather_facts: yes
+  become: yes
+
+  vars:
+    update_commands:
+      Debian:
+        update_cache: "apt-get update"
+        list_updates: "apt list --upgradable"
+        upgrade: "apt-get upgrade -y"
+        full_upgrade: "apt-get dist-upgrade -y"
+      Ubuntu:
+        update_cache: "apt-get update"
+        list_updates: "apt list --upgradable"
+        upgrade: "apt-get upgrade -y"
+        full_upgrade: "apt-get dist-upgrade -y"
+      RedHat:
+        update_cache: "yum check-update"
+        list_updates: "yum list updates"
+        upgrade: "yum update -y"
+      CentOS:
+        update_cache: "yum check-update"
+        list_updates: "yum list updates"
+        upgrade: "yum update -y"
+      Fedora:
+        update_cache: "dnf check-update"
+        list_updates: "dnf list updates"
+        upgrade: "dnf upgrade -y"
+      Suse:
+        update_cache: "zypper refresh"
+        list_updates: "zypper list-updates"
+        upgrade: "zypper update -y"
+      Archlinux:
+        update_cache: "pacman -Sy"
+        list_updates: "pacman -Qu"
+        upgrade: "pacman -Syu --noconfirm"
+      Alpine:
+        update_cache: "apk update"
+        list_updates: "apk list --upgradable"
+        upgrade: "apk upgrade"
+      FreeBSD:
+        update_cache: "pkg update"
+        list_updates: "pkg version -vL="
+        upgrade: "pkg upgrade -y"
+    reboot_required_file: "/var/run/reboot-required"
+
+  tasks:
+    - name: Definir variáveis específicas do sistema operacional
+      set_fact:
+        os_family: "{{ ansible_distribution }}"
+        update_cache_cmd: "{{ update_commands[ansible_distribution]['update_cache'] | default('') }}"
+        list_updates_cmd: "{{ update_commands[ansible_distribution]['list_updates'] | default('') }}"
+        upgrade_cmd: "{{ update_commands[ansible_distribution]['upgrade'] | default('') }}"
+        full_upgrade_cmd: "{{ update_commands[ansible_distribution]['full_upgrade'] | default(update_commands[ansible_distribution]['upgrade'] | default('')) }}"
+
+    - name: Atualizar cache de pacotes (sistemas Unix/Linux)
+      command: "{{ update_cache_cmd }}"
+      changed_when: false
+      when: update_cache_cmd != '' and ansible_os_family != 'Windows'
+
+    - name: Verificar atualizações disponíveis (sistemas Unix/Linux)
+      command: "{{ list_updates_cmd }}"
+      register: updates_output
+      changed_when: false
+      when: list_updates_cmd != '' and ansible_os_family != 'Windows'
+
+    - name: Exibir atualizações disponíveis (sistemas Unix/Linux)
+      debug:
+        msg: "{{ updates_output.stdout_lines }}"
+      when: list_updates_cmd != '' and ansible_os_family != 'Windows'
+
+    - name: Realizar atualização (sistemas Unix/Linux)
+      command: "{{ upgrade_cmd }}"
+      when: upgrade_cmd != '' and ansible_os_family != 'Windows'
+
+    - name: Verificar se é necessário reiniciar (sistemas Unix/Linux)
+      stat:
+        path: "{{ reboot_required_file }}"
+      register: reboot_required_file_status
+      when: ansible_os_family != 'Windows'
+
+    - name: Verificar atualizações disponíveis (Windows)
+      win_updates:
+        state: searched
+        category_names:
+          - SecurityUpdates
+          - CriticalUpdates
+          - UpdateRollups
+          - Updates
+      register: win_updates
+      when: ansible_os_family == 'Windows'
+
+    - name: Exibir atualizações disponíveis (Windows)
+      debug:
+        msg: "{{ win_updates.updates | map(attribute='title') | list }}"
+      when: ansible_os_family == 'Windows'
+
+    - name: Instalar atualizações (Windows)
+      win_updates:
+        category_names:
+          - SecurityUpdates
+          - CriticalUpdates
+          - UpdateRollups
+          - Updates
+        reboot: no
+      register: win_update_result
+      when: ansible_os_family == 'Windows'
+
+    - name: Reiniciar o sistema (se necessário - Unix/Linux)
+      reboot:
+      when: 
+        - ansible_os_family != 'Windows'
+        - reboot_required_file_status.stat.exists
+
+    - name: Reiniciar o sistema (se necessário - Windows)
+      win_reboot:
+      when: 
+        - ansible_os_family == 'Windows'
+        - win_update_result.reboot_required
+
+    - name: Resumo das atualizações
+      debug:
+        msg: |
+          Sistema Operacional: {{ ansible_distribution }} {{ ansible_distribution_version }}
+          Atualizações instaladas: {{ 
+            'Sim' if (ansible_os_family != 'Windows' and upgrade_cmd != '') 
+            else ('Sim' if (ansible_os_family == 'Windows' and win_update_result.installed_update_count > 0) else 'Não') 
+          }}
+          Reinicialização necessária: {{
+            'Sim' if (ansible_os_family != 'Windows' and reboot_required_file_status.stat.exists)
+            else ('Sim' if (ansible_os_family == 'Windows' and win_update_result.reboot_required) else 'Não')
+          }}
